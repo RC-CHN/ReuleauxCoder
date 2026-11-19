@@ -31,9 +31,11 @@ test('failed calls break out and split the run, keeping order', () => {
   assert.equal(folded[1].status, 'failed');
 });
 
-test('denied and cancelled calls also break out', () => {
-  const folded = foldToolCells([tool('t1'), tool('t2', 'edit_file', 'denied'), tool('t3', 'edit_file', 'cancelled')]);
-  assert.deepEqual(folded.map(cell => cell.id), ['t1', 't2', 't3']);
+test('every unsuccessful core outcome stays visible, including a timed out shell command', () => {
+  for (const status of ['failed', 'denied', 'cancelled', 'timed_out', 'timeout', 'error']) {
+    const cells = [tool('a', 'shell', 'succeeded'), tool('b', 'shell', status)];
+    assert.deepEqual(foldToolCells(cells), cells);
+  }
 });
 
 test('a running member marks the group running and reports progress', () => {

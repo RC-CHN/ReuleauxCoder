@@ -255,8 +255,8 @@ body.configuring #transcript, body.configuring #drop-zone, body.configuring #ove
 .tool-target {font-size: 11px; color: var(--vscode-textLink-foreground, var(--info)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%}
 .tool-state {font-size: 10px; flex: 0 0 auto; color: var(--vscode-gitDecoration-addedResourceForeground, var(--success))}
 .tool-disclosure[data-status="running"] > summary .tool-state {color: var(--accent)}
-.tool-disclosure:is([data-status="failed"], [data-status="error"], [data-status="timeout"], [data-status="denied"], [data-status="cancelled"]) > summary .tool-state {color: var(--vscode-errorForeground, var(--danger))}
-.tool-disclosure:is([data-status="failed"], [data-status="error"], [data-status="timeout"]) {border-color: var(--vscode-inputValidation-errorBorder, #ce7171)}
+.tool-disclosure[data-failed] > summary .tool-state {color: var(--vscode-errorForeground, var(--danger))}
+.tool-disclosure[data-failed]:not([data-status="denied"], [data-status="cancelled"]) {border-color: var(--vscode-inputValidation-errorBorder, #ce7171)}
 .tool-members {padding: 0 7px 7px}.tool-members > .tool-disclosure {border-left: 2px solid var(--line); margin: 4px 0 0 6px; padding: 0}
 .tool-content {padding: 0 12px 12px; min-width: 0}.tool-arguments {margin: 5px 0 10px}.tool-arguments h4 {font-size: 10px; font-weight: 650; margin: 0 0 6px; color: var(--accent)}
 .tool-arguments dl {display: grid; grid-template-columns: minmax(60px, max-content) minmax(0, 1fr); gap: 5px 12px; margin: 0; padding: 9px; background: var(--canvas); border-radius: 5px; font-size: 11px; font-family: var(--vscode-editor-font-family, monospace)}

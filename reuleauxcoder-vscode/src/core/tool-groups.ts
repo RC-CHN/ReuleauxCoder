@@ -1,5 +1,5 @@
 import {t, type MessageKey} from '../i18n.js';
-import type {ChatCell} from '../shared.js';
+import {toolFailed, type ChatCell} from '../shared.js';
 
 /**
  * Folding projection over the flat transcript: consecutive successful tool calls
@@ -7,14 +7,12 @@ import type {ChatCell} from '../shared.js';
  * intact in Transcript; failed calls always break out on their own row.
  */
 
-const FAILED = new Set(['failed', 'denied', 'cancelled', 'timeout', 'error']);
 const CATEGORIES: Record<string, MessageKey> = {
   read_file: '{0} reads', grep: '{0} searches', glob: '{0} searches',
   list_file: '{0} listings', shell: '{0} commands', shell_session: '{0} commands',
   edit_file: '{0} edits', write_file: '{0} writes',
 };
 
-const isFailed = (cell: ChatCell): boolean => FAILED.has(cell.status ?? '');
 const isRunning = (cell: ChatCell): boolean => cell.status === 'running';
 
 function pollSession(cell: ChatCell): string | undefined {
@@ -71,7 +69,7 @@ export function foldToolCells(cells: ChatCell[]): ChatCell[] {
     run = [];
   };
   for (const cell of cells) {
-    if (cell.role === 'reasoning' || cell.role === 'tool' && !isFailed(cell)) {run.push(cell); continue;}
+    if (cell.role === 'reasoning' || cell.role === 'tool' && !toolFailed(cell.status)) {run.push(cell); continue;}
     flush();
     folded.push(cell);
   }

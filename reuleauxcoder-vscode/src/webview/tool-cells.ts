@@ -1,10 +1,9 @@
-import type {ChatCell} from '../shared.js';
+import {toolFailed, type ChatCell} from '../shared.js';
 import {t, errorText, toolLabel} from '../i18n.js';
 import {icon} from './icons.js';
 import {renderMarkdown} from './markdown.js';
 import {reveal} from './motion.js';
 
-const failed = new Set(['failed', 'denied', 'cancelled', 'timeout', 'error']);
 interface Entry {
   cell: ChatCell; details: HTMLDetailsElement; title: HTMLElement; target: HTMLElement; status: HTMLElement;
   content: HTMLElement; body?: HTMLElement; arguments?: HTMLElement; text?: string; bodyStatus?: string; detail?: string; header?: Partial<ChatCell>;
@@ -41,7 +40,7 @@ export class ToolCells {
       const content = document.createElement('div'); content.className = cell.role === 'tool-group' ? 'tool-members' : 'tool-content';
       details.append(summary, content);
       const inheritedOpen = cell.members?.some(member => this.entries.get(member.id)?.details.open);
-      details.open = this.expandNew || !!inheritedOpen || failed.has(cell.status ?? '');
+      details.open = this.expandNew || !!inheritedOpen || toolFailed(cell.status);
       entry = {cell, details, title, target, status, content}; this.entries.set(cell.id, entry);
       const current = entry;
       details.addEventListener('toggle', () => {
@@ -49,7 +48,7 @@ export class ToolCells {
         this.changed();
       });
     }
-    if (failed.has(cell.status ?? '') && !failed.has(entry.cell.status ?? '')) entry.details.open = true;
+    if (toolFailed(cell.status) && !toolFailed(entry.cell.status)) entry.details.open = true;
     entry.cell = cell;
     const header = {role: cell.role, title: cell.title, status: cell.status, detail: cell.detail, merged: cell.merged, text: cell.role === 'tool-group' ? cell.text : ''};
     if (!entry.header || Object.entries(header).some(([key, value]) => entry!.header![key as keyof ChatCell] !== value)) {
@@ -60,6 +59,7 @@ export class ToolCells {
       const target = group.length ? group.slice(1).join(' · ') : cell.merged ? t('{0} checks', cell.merged) : args.command ?? args.file_path ?? args.path ?? args.pattern ?? args.url ?? args.task ?? '';
       entry.target.textContent = String(target); entry.target.title = String(target); entry.target.hidden = !target;
       entry.details.dataset.status = cell.status ?? '';
+      entry.details.toggleAttribute('data-failed', toolFailed(cell.status));
       entry.status.textContent = cell.role === 'tool-group' || cell.role === 'reasoning' ? '' : errorText(cell.status ?? '');
       entry.status.hidden = !entry.status.textContent;
       entry.details.title = cell.role === 'tool' ? cell.title ?? '' : '';
