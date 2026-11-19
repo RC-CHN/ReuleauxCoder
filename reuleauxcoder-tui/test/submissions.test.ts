@@ -184,6 +184,26 @@ test('a torn history record and a failed append do not prevent later saves', asy
   assert.deepEqual(reopened.entries, ['third']);
 });
 
+test('F3 restores an unapplied submission and its original image without resending', async () => {
+  const f = fixture(true), c = f.c;
+  f.client.state.support_modal = ['text', 'image'];
+  try {
+    const image = {attachment_id: 'old', variant_id: 'v', path: 'old.png'} as any;
+    c.images = [{label: '[Image #4]', image}]; c.composer = editor('Inspect [Image #4]');
+    const send = c.key('', {return: true}); await tick(); f.reply(0); await send;
+    f.peer.receive({jsonrpc: '2.0', method: 'runtime.state', params: {state: {...f.client.state, running: false, revision: 5}}});
+    c.composer = editor('keep this draft');
+    await c.key('[13~'); await c.key('', {return: true});
+    assert.equal(c.composer.text, 'keep this draft');
+    assert.equal(c.queueItems.length, 1);
+    c.composer = editor(); await c.key('', {return: true});
+    assert.equal(c.composer.text, 'Inspect [Image #4]');
+    assert.deepEqual(c.images, [{label: '[Image #4]', image}]);
+    assert.equal(c.queueItems.length, 0);
+    assert.equal(f.requests.length, 1);
+  } finally {f.close();}
+});
+
 test('unconfirmed delivery retries with the same ID and leaves the next draft alone', async () => {
   const f = fixture(true);
   try {

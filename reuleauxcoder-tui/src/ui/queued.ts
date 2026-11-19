@@ -18,7 +18,7 @@ export function queuedRows(state: RuntimeState, width: number, height: number, p
   for (let index = 0; index < Math.max(prompts.length, commands.length); index++) {
     if (index < prompts.length) {
       const prompt = prompts[index];
-      const status = prompt.status === 'cancelled' ? 'withdrawn · Enter to edit' : prompt.status === 'not-applied' ? 'not applied · Alt+Up to edit' : prompt.status === 'queued' ? '' : prompt.status;
+      const status = prompt.status === 'cancelled' ? 'withdrawn · Enter to edit' : prompt.status === 'not-applied' ? 'not applied · F3 to edit' : prompt.status === 'queued' ? '' : prompt.status;
       entries.push({label: `Prompt ${index + 1}${status ? ` · ${status}` : ''}`, text: prompt.text, selected: !!controls?.selected && prompt.id === controls.selected});
     }
     if (index < commands.length) entries.push({label: `Command ${index + 1}`, text: commands[index]});

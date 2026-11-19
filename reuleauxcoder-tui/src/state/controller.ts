@@ -172,27 +172,37 @@ export class TuiController extends EventEmitter {
       ...[...this.withdrawn].map(([id, draft]) => ({id, text: draft.text, status: 'cancelled'})),
     ];
   }
+  get canManageQueue() {return !!this.client.info?.input_cancellation || [...this.session.pendingInputs.values()].some(cell => cell.tone === 'not-applied');}
   private async withdrawInput(editDraft: boolean) {
     const item = this.queueItems.find(item => item.id === this.queueFocus);
     if (!item || this.queueBusy) return;
     let draft = this.withdrawn.get(item.id);
     if (!draft) {
-      if (!['queued', 'accepted'].includes(item.status)) {this.status = 'Wait for delivery confirmation before withdrawing this message.'; return;}
-      const generation = this.client.state.session_generation;
       const sent = this.submissions.get(item.id);
-      this.queueBusy = true; this.changed();
-      try {
-        const result = await this.client.cancelInput(item.id);
-        if (generation !== this.client.state.session_generation) return;
-        if (result.outcome !== 'cancelled') {this.status = 'This message is no longer queued.'; await this.client.refresh(); return;}
-        // The notification removes the pending tile; keep the original image labels for editing.
-        const value = sent ? decode(sent.value) : undefined;
-        const fallback = inputDraft(result.content);
-        const images: ImageReference[] = value?.images ?? fallback.images;
-        draft = {text: sent?.text ?? fallback.text, images: images.map((image, index) => ({image, label: value?.image_labels?.[index] ?? `[Image #${index + 1}]`}))};
-        for (const {label} of draft.images) if (!draft.text.includes(label)) draft.text += ` ${label}`;
-        if (editDraft) this.withdrawn.set(item.id, draft);
-      } finally {this.queueBusy = false;}
+      let fallback = inputDraft(item.text);
+      if (item.status === 'not-applied') {
+        if (editDraft && (this.composer.text || this.images.length)) {
+          this.status = 'Send or clear your current draft before restoring this message.';
+          return;
+        }
+        this.session.pendingInputs.delete(item.id);
+      } else {
+        if (!this.client.info?.input_cancellation) {this.status = 'This backend cannot withdraw a queued message.'; return;}
+        if (!['queued', 'accepted'].includes(item.status)) {this.status = 'Wait for delivery confirmation before withdrawing this message.'; return;}
+        const generation = this.client.state.session_generation;
+        this.queueBusy = true; this.changed();
+        try {
+          const result = await this.client.cancelInput(item.id);
+          if (generation !== this.client.state.session_generation) return;
+          if (result.outcome !== 'cancelled') {this.status = 'This message is no longer queued.'; await this.client.refresh(); return;}
+          fallback = inputDraft(result.content);
+        } finally {this.queueBusy = false;}
+      }
+      const value = sent ? decode(sent.value) : undefined;
+      const images: ImageReference[] = value?.images ?? fallback.images;
+      draft = {text: sent?.text ?? fallback.text, images: images.map((image, index) => ({image, label: value?.image_labels?.[index] ?? `[Image #${index + 1}]`}))};
+      for (const {label} of draft.images) if (!draft.text.includes(label)) draft.text += ` ${label}`;
+      if (editDraft) this.withdrawn.set(item.id, draft);
     }
     if (editDraft) {
       if (this.composer.text || this.images.length) this.status = 'Message withdrawn. Your current draft is kept; use F3 then Enter to edit it after clearing the draft.';
@@ -205,7 +215,7 @@ export class TuiController extends EventEmitter {
     } else {
       this.withdrawn.delete(item.id);
       this.queueFocus = this.queueItems.at(-1)?.id ?? null;
-      this.status = 'Queued message cancelled.';
+      this.status = item.status === 'not-applied' ? 'Message dismissed.' : 'Queued message cancelled.';
     }
   }
 
@@ -435,7 +445,7 @@ export class TuiController extends EventEmitter {
     const queueKey = input === '[13~' || input === '\x1bOR' || input === 'OR';
     if (!this.active && !this.screen && (queueKey || this.queueFocus)) {
       if (queueKey || key.escape || key.ctrl && input === 'c') {
-        this.queueFocus = this.queueFocus ? null : queueKey && this.client.info?.input_cancellation ? this.queueItems.at(-1)?.id ?? null : null;
+        this.queueFocus = this.queueFocus ? null : queueKey && this.canManageQueue ? this.queueItems.at(-1)?.id ?? null : null;
       } else {
         const items = this.queueItems;
         if (!items.length) {this.queueFocus = null; return;}
